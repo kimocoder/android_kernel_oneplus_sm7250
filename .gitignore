@@ -148,3 +148,8 @@ techpack/
 
 # ignore net/oplus_modules
 #net/oplus_modules
+
+#
+#Ignoring Android.bp link file
+#
+Android.bp
