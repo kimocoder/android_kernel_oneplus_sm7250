@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"%s: " fmt, __func__
@@ -559,7 +559,7 @@ static void dsi_pll_config_slave(struct mdss_pll_resources *rsc)
 	rsc->slave = NULL;
 
 	if (!orsc) {
-		pr_debug("slave PLL unavailable, assuming standalone config\n");
+		pr_warn("slave PLL unavilable, assuming standalone config\n");
 		return;
 	}
 
@@ -1055,9 +1055,15 @@ static int dsi_pll_read_stored_trim_codes(struct mdss_pll_resources *pll_res,
 			codes_info->pll_codes.pll_codes_2,
 			codes_info->pll_codes.pll_codes_3);
 
+	#ifdef OPLUS_BUG_STABILITY
+		if ((vco_clk_rate / 1000) != (codes_info->clk_rate / 1000) &&
+				codes_info->is_valid)
+			continue;
+	#else
 		if (vco_clk_rate != codes_info->clk_rate &&
 				codes_info->is_valid)
 			continue;
+	#endif /* OPLUS_BUG_STABILITY */
 
 		pll_res->cache_pll_trim_codes[0] =
 			codes_info->pll_codes.pll_codes_1;

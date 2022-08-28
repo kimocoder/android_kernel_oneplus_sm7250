@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _DSI_PHY_HW_H_
@@ -21,6 +20,16 @@
 		fmt, p ? p->index : -1, ##__VA_ARGS__)
 #define DSI_PHY_WARN(p, fmt, ...)	DRM_WARN("[msm-dsi-warn]: DSI_%d: " fmt,\
 		p ? p->index : -1, ##__VA_ARGS__)
+#ifdef OPLUS_BUG_STABILITY
+#undef DSI_PHY_ERR
+#include <soc/oplus/system/oplus_mm_kevent_fb.h>
+#define DSI_PHY_ERR(p, fmt, ...) \
+	do { \
+		DRM_DEV_ERROR(NULL, "[msm-dsi-error]: DSI_%d: "\
+				fmt, p ? p->index : -1, ##__VA_ARGS__); \
+		mm_fb_display_kevent_named(MM_FB_KEY_RATELIMIT_1H, fmt, ##__VA_ARGS__); \
+	} while(0)
+#endif /* OPLUS_BUG_STABILITY */
 
 /**
  * enum dsi_phy_version - DSI PHY version enumeration
@@ -97,7 +106,6 @@ struct dsi_phy_per_lane_cfgs {
  * @is_phy_timing_present:	Boolean whether phy timings are defined.
  * @regulators:       Regulator settings for lanes.
  * @pll_source:       PLL source.
- * @data_lanes:       Number of data lanes used.
  * @lane_map:         DSI logical to PHY lane mapping.
  * @force_clk_lane_hs:Boolean whether to force clock lane in HS mode.
  * @phy_type:         Phy-type (Dphy/Cphy).
@@ -114,7 +122,6 @@ struct dsi_phy_cfg {
 	bool force_clk_lane_hs;
 	enum dsi_phy_type phy_type;
 	unsigned long bit_clk_rate_hz;
-	u32 data_lanes;
 };
 
 struct dsi_phy_hw;
