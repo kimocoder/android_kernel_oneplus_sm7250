@@ -21,6 +21,11 @@
 #include <ipc/apr.h>
 #include "adsp_err.h"
 
+#ifdef OPLUS_FEATURE_AUDIODETECT
+#include <linux/proc_fs.h>
+#include "../asoc/msm-qti-pp-config.h"
+#endif /* OPLUS_FEATURE_AUDIODETECT */
+
 #define TIMEOUT_MS 1000
 
 #define RESET_COPP_ID 99
@@ -95,7 +100,6 @@ struct adm_ctl {
 	struct param_outband outband_memmap;
 	struct source_tracking_data sourceTrackingData;
 
-	struct mutex adm_apr_lock;
 	int set_custom_topology;
 	int ec_ref_rx;
 	int num_ec_ref_rx_chans;
@@ -109,6 +113,10 @@ struct adm_ctl {
 };
 
 static struct adm_ctl			this_adm;
+
+#ifdef OPLUS_FEATURE_AUDIODETECT
+struct proc_dir_entry *mutedet_dbg_dir;
+#endif /* OPLUS_FEATURE_AUDIODETECT */
 
 struct adm_multi_ch_map {
 	bool set_channel_map;
@@ -137,6 +145,27 @@ static struct adm_multi_ch_map port_channel_map[AFE_MAX_PORTS];
 static int adm_get_parameters[MAX_COPPS_PER_PORT * ADM_GET_PARAMETER_LENGTH];
 static int adm_module_topo_list[MAX_COPPS_PER_PORT *
 				ADM_GET_TOPO_MODULE_INSTANCE_LIST_LENGTH];
+
+#ifdef OPLUS_FEATURE_AUDIODETECT
+int general_playback_muted_cnt = 0;
+int general_record_muted_cnt = 0;
+int general_playback_zd_cnt = 0;
+int general_record_zd_cnt = 0;
+int general_playback_pop_cnt = 0;
+int general_record_pop_cnt = 0;
+int general_playback_clip_cnt = 0;
+int general_record_clip_cnt = 0;
+
+int voip_rx_muted_cnt = 0;
+int voip_tx_muted_cnt = 0;
+int voip_rx_zd_cnt = 0;
+int voip_tx_zd_cnt = 0;
+int voip_rx_pop_cnt = 0;
+int voip_tx_pop_cnt = 0;
+int voip_rx_clip_cnt = 0;
+int voip_tx_clip_cnt = 0;
+#endif /* OPLUS_FEATURE_AUDIODETECT */
+
 static struct mutex dts_srs_lock;
 
 void msm_dts_srs_acquire_lock(void)
@@ -212,6 +241,138 @@ int adm_get_default_copp_idx(int port_id)
 	return -EINVAL;
 }
 EXPORT_SYMBOL(adm_get_default_copp_idx);
+
+#ifdef OPLUS_FEATURE_AUDIODETECT
+#define SESSION_TYPE_RX 0
+#define SESSION_TYPE_TX 1
+int adm_set_auddet_enable_param(int port_id, uint8_t val)
+{
+	uint8_t enable;
+	struct param_hdr_v3 param_hdr;
+	int rc  = -EINVAL;
+	int idx;
+	int port_idx = adm_validate_and_get_port_index(port_id);
+
+	pr_info("%s, portid %d, enable %d\n", __func__, port_id, val);
+
+	memset(&param_hdr, 0, sizeof(param_hdr));
+	param_hdr.module_id = MUTE_DETECT_MODULE_ID;
+	param_hdr.instance_id = INSTANCE_ID_0;
+	param_hdr.param_id = MUTE_DETECT_ENABLE_PARAM_ID;
+	param_hdr.param_size = sizeof(enable);
+
+	enable = val;
+
+	for (idx = 0; idx < MAX_COPPS_PER_PORT; idx++) {
+		if (atomic_read(&this_adm.copp.id[port_idx][idx]) != RESET_COPP_ID) {
+			pr_info("%s : active copp_idx:0x%x for port_id \n",__func__, idx);
+
+			if (atomic_read(&this_adm.copp.session_type[port_idx][idx]) == SESSION_TYPE_TX) {
+				param_hdr.instance_id = 0x8000;
+			}
+
+			if ((atomic_read(&this_adm.copp.app_type[port_idx][idx])) != 0x1113a) {
+				continue;
+			}
+
+			rc = adm_pack_and_set_one_pp_param(port_id, idx, param_hdr,
+				   (uint8_t *) &enable);
+			if (rc) {
+				pr_err("%s: Failed to set auddet enable, err %d\n", __func__, rc);
+			} else {
+				pr_err("%s: set auddet enable ok\n", __func__);
+				break;
+			}
+		}
+	}
+
+	return rc;
+}
+EXPORT_SYMBOL(adm_set_auddet_enable_param);
+
+int adm_get_all_mute_pp_param_from_port(int port_id)
+{
+	int port_idx = adm_validate_and_get_port_index(port_id), idx;
+	int ret = 0;
+	char *param_value;
+	uint32_t param_size = (4) * sizeof(uint32_t) + sizeof(struct param_hdr_v3);
+	struct param_hdr_v3 param_hdr;
+
+	if (port_idx < 0) {
+		pr_err("%s: Invalid port id: 0x%x", __func__, port_id);
+		return -EINVAL;
+	}
+	pr_info("%s: port_idx:%d\n", __func__, port_idx);
+
+	param_value = kzalloc(param_size, GFP_KERNEL);
+	if (!param_value)
+		return -ENOMEM;
+
+	param_hdr.module_id = MUTE_DETECT_MODULE_ID;
+	param_hdr.instance_id = INSTANCE_ID_0;
+	param_hdr.param_id = MUTE_DETECT_RESULT_PARAM_ID;
+	param_hdr.param_size = param_size;
+
+	for (idx = 0; idx < MAX_COPPS_PER_PORT; idx++) {
+		if (atomic_read(&this_adm.copp.id[port_idx][idx]) != RESET_COPP_ID) {
+			pr_info("%s : active copp_idx:0x%x for port_id \n",__func__, idx);
+
+			if (atomic_read(&this_adm.copp.session_type[port_idx][idx]) == SESSION_TYPE_TX) {
+				param_hdr.instance_id = 0x8000;
+			}
+
+			if ((atomic_read(&this_adm.copp.app_type[port_idx][idx])) != 0x1113a) {
+				continue;
+			}
+
+			ret = adm_get_pp_params(port_id, idx,
+						ADM_CLIENT_ID_DEFAULT, NULL, &param_hdr,
+						param_value);
+			pr_info("%s : mute_detect return param, ret: %d, mutedet = %d, zd = %d, pop = %d, clip = %d\n",__func__, ret, *(uint32_t *)param_value, *((uint32_t *)param_value + 1), *((uint32_t *)param_value + 2), *((uint32_t *)param_value + 3));
+			pr_info("%s : COPP: 0x%x\n",__func__, this_adm.copp.app_type[port_idx][idx]);
+			switch (atomic_read(&this_adm.copp.app_type[port_idx][idx])) {
+				case 0x11130:
+					pr_info("%s : update playback detection result\n",__func__);
+					general_playback_muted_cnt = *(uint32_t *)param_value;
+					general_playback_zd_cnt = *((uint32_t *)param_value + 1);
+					general_playback_pop_cnt = *((uint32_t *)param_value + 2);
+					general_playback_clip_cnt = *((uint32_t *)param_value + 3);
+					break;
+				case 0x11132:
+					pr_info("%s : update recording detection result\n",__func__);
+					general_record_muted_cnt = *(uint32_t *)param_value;
+					general_record_zd_cnt = *((uint32_t *)param_value + 1);
+					general_record_pop_cnt = *((uint32_t *)param_value + 2);
+					general_record_clip_cnt = *((uint32_t *)param_value + 3);
+					break;
+				case 0x1113a:
+					pr_info("%s : update VOIP detection result\n",__func__);
+					if (atomic_read(&this_adm.copp.session_type[port_idx][idx]) == SESSION_TYPE_RX) {
+						pr_info("%s : VOIP RX result\n",__func__);
+						voip_rx_muted_cnt = *(uint32_t *)param_value;
+						voip_rx_zd_cnt = *((uint32_t *)param_value + 1);
+						voip_rx_pop_cnt = *((uint32_t *)param_value + 2);
+						voip_rx_clip_cnt = *((uint32_t *)param_value + 3);
+					} else if (atomic_read(&this_adm.copp.session_type[port_idx][idx]) == SESSION_TYPE_TX) {
+						pr_info("%s : VOIP TX result\n",__func__);
+						voip_tx_muted_cnt = *(uint32_t *)param_value;
+						voip_tx_zd_cnt = *((uint32_t *)param_value + 1);
+						voip_tx_pop_cnt = *((uint32_t *)param_value + 2);
+						voip_tx_clip_cnt = *((uint32_t *)param_value + 3);
+					}
+					break;
+				default:
+					break;
+			}
+			memset(param_value, 0, param_size);
+		}
+	}
+
+	kfree(param_value);
+	return 0;
+}
+EXPORT_SYMBOL(adm_get_all_mute_pp_param_from_port);
+#endif /* OPLUS_FEATURE_AUDIODETECT */
 
 int adm_get_topology_for_port_from_copp_id(int port_id, int copp_id)
 {
@@ -871,71 +1032,6 @@ exit:
 EXPORT_SYMBOL(adm_set_custom_chmix_cfg);
 
 /*
- * adm_apr_send_pkt : returns 0 on success, negative otherwise.
- */
-int adm_apr_send_pkt(void *data, wait_queue_head_t *wait,
-			int port_idx, int copp_idx, int opcode)
-{
-	int ret = 0;
-	atomic_t *copp_stat = NULL;
-	int32_t time_out = msecs_to_jiffies(TIMEOUT_MS);
-	wait = &this_adm.copp.wait[port_idx][copp_idx];
-
-	if (!wait)
-		return -EINVAL;
-
-	mutex_lock(&this_adm.adm_apr_lock);
-	pr_debug("%s: port idx  %d copp idx  %d\n", __func__,
-				port_idx, copp_idx);
-	copp_stat = &this_adm.copp.stat[port_idx][copp_idx];
-	atomic_set(copp_stat, -1);
-
-	if (opcode != ADM_CMD_DEVICE_OPEN_V8 &&
-		opcode != ADM_CMD_DEVICE_OPEN_V6 &&
-		opcode != ADM_CMD_DEVICE_OPEN_V5 &&
-		opcode != ADM_CMD_DEVICE_CLOSE_V5) {
-		if (atomic_read(&this_adm.copp.cnt[port_idx][copp_idx])
-			== 0) {
-			pr_err("%s: port[0x%x] copp[0x%x] inactive\n",
-				__func__, port_idx, copp_idx);
-			mutex_unlock(&this_adm.adm_apr_lock);
-			return -EINVAL;
-		}
-	}
-
-	if (opcode == ADM_CMD_DEVICE_OPEN_V8 ||
-		opcode == ADM_CMD_DEVICE_OPEN_V6 ||
-		opcode == ADM_CMD_DEVICE_OPEN_V5) {
-		time_out = msecs_to_jiffies(2 * TIMEOUT_MS);
-	}
-
-	ret = apr_send_pkt(this_adm.apr, data);
-	if (ret > 0) {
-		ret = wait_event_timeout(*wait,
-			atomic_read(copp_stat) >= 0,
-			time_out);
-		if (atomic_read(copp_stat) > 0) {
-			pr_err("%s: DSP returned error[%s]\n", __func__,
-				adsp_err_get_err_str(atomic_read(copp_stat)));
-			ret = adsp_err_get_lnx_err_code(atomic_read(copp_stat));
-		} else	if (!ret) {
-			pr_err_ratelimited("%s: request timedout\n",
-				__func__);
-			ret = -ETIMEDOUT;
-		} else {
-			ret = 0;
-		}
-	} else if (ret == 0) {
-		pr_err("%s: packet not transmitted\n", __func__);
-		/* apr_send_pkt can return 0 when nothing is transmitted */
-		ret = -EINVAL;
-	}
-
-	mutex_unlock(&this_adm.adm_apr_lock);
-	return ret;
-}
-
-/*
  * With pre-packed data, only the opcode differes from V5 and V6.
  * Use q6common_pack_pp_params to pack the data correctly.
  */
@@ -946,6 +1042,7 @@ int adm_set_pp_params(int port_id, int copp_idx,
 	struct adm_cmd_set_pp_params *adm_set_params = NULL;
 	int size = 0;
 	int port_idx = 0;
+	atomic_t *copp_stat = NULL;
 	int ret = 0;
 
 	port_id = afe_convert_virtual_to_portid(port_id);
@@ -1003,9 +1100,32 @@ int adm_set_pp_params(int port_id, int copp_idx,
 		ret = -EINVAL;
 		goto done;
 	}
-	ret = adm_apr_send_pkt((uint32_t *) adm_set_params,
-			&this_adm.copp.wait[port_idx][copp_idx],
-			port_idx, copp_idx, adm_set_params->apr_hdr.opcode);
+
+	copp_stat = &this_adm.copp.stat[port_idx][copp_idx];
+	atomic_set(copp_stat, -1);
+	ret = apr_send_pkt(this_adm.apr, (uint32_t *) adm_set_params);
+	if (ret < 0) {
+		pr_err("%s: Set params APR send failed port = 0x%x ret %d\n",
+		       __func__, port_id, ret);
+		goto done;
+	}
+	ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
+				 atomic_read(copp_stat) >= 0,
+				 msecs_to_jiffies(TIMEOUT_MS));
+	if (!ret) {
+		pr_err("%s: Set params timed out port = 0x%x\n", __func__,
+		       port_id);
+		ret = -ETIMEDOUT;
+		goto done;
+	}
+	if (atomic_read(copp_stat) > 0) {
+		pr_err("%s: DSP returned error[%s]\n", __func__,
+		       adsp_err_get_err_str(atomic_read(copp_stat)));
+		ret = adsp_err_get_lnx_err_code(atomic_read(copp_stat));
+		goto done;
+	}
+
+	ret = 0;
 done:
 	kfree(adm_set_params);
 	return ret;
@@ -1058,6 +1178,7 @@ int adm_get_pp_params(int port_id, int copp_idx, uint32_t client_id,
 	int returned_param_size_in_bytes = 0;
 	int port_idx = 0;
 	int idx = 0;
+	atomic_t *copp_stat = NULL;
 	int ret = 0;
 
 	if (param_hdr == NULL) {
@@ -1105,9 +1226,33 @@ int adm_get_pp_params(int port_id, int copp_idx, uint32_t client_id,
 	else
 		adm_get_params.apr_hdr.opcode = ADM_CMD_GET_PP_PARAMS_V5;
 
-	ret = adm_apr_send_pkt((uint32_t *) &adm_get_params,
-			&this_adm.copp.wait[port_idx][copp_idx],
-			port_idx, copp_idx, adm_get_params.apr_hdr.opcode);
+	copp_stat = &this_adm.copp.stat[port_idx][copp_idx];
+	atomic_set(copp_stat, -1);
+
+	ret = apr_send_pkt(this_adm.apr, (uint32_t *) &adm_get_params);
+	if (ret < 0) {
+		pr_err("%s: Get params APR send failed port = 0x%x ret %d\n",
+		       __func__, port_id, ret);
+		ret = -EINVAL;
+		goto done;
+	}
+	ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
+				 atomic_read(copp_stat) >= 0,
+				 msecs_to_jiffies(TIMEOUT_MS));
+	if (!ret) {
+		pr_err("%s: Get params timed out port = 0x%x\n", __func__,
+		       port_id);
+		ret = -ETIMEDOUT;
+		goto done;
+	}
+	if (atomic_read(copp_stat) > 0) {
+		pr_err("%s: DSP returned error[%s]\n", __func__,
+		       adsp_err_get_err_str(atomic_read(copp_stat)));
+		ret = adsp_err_get_lnx_err_code(atomic_read(copp_stat));
+		goto done;
+	}
+
+	ret = 0;
 
 	/* Copy data to caller if sent in band */
 	if (!returned_param_data) {
@@ -1135,6 +1280,7 @@ int adm_get_pp_params(int port_id, int copp_idx, uint32_t client_id,
 
 	memcpy(returned_param_data, &adm_get_parameters[idx + 1],
 	       returned_param_size_in_bytes);
+done:
 	return ret;
 }
 EXPORT_SYMBOL(adm_get_pp_params);
@@ -1617,15 +1763,8 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 					this_adm.sourceTrackingData.
 						apr_cmd_status = payload[1];
 				else if (rtac_make_adm_callback(payload,
-						data->payload_size)) {
-					pr_debug("%s: rtac cmd response\n",
-						 __func__);
-				}
-				atomic_set(&this_adm.copp.stat[port_idx]
-						[copp_idx], payload[1]);
-				wake_up(
-				&this_adm.copp.wait[port_idx][copp_idx]);
-				break;
+							data->payload_size))
+					break;
 				/*
 				 * if soft volume is called and already
 				 * interrupted break out of the sequence here
@@ -1634,8 +1773,8 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 			case ADM_CMD_DEVICE_CLOSE_V5:
 			case ADM_CMD_DEVICE_OPEN_V6:
 			case ADM_CMD_DEVICE_OPEN_V8:
-				pr_debug("%s: Basic callback received for 0x%x, wake up.\n",
-					__func__, payload[0]);
+				pr_debug("%s: Basic callback received, wake up.\n",
+					__func__);
 				atomic_set(&this_adm.copp.stat[port_idx]
 						[copp_idx], payload[1]);
 				wake_up(
@@ -1768,13 +1907,8 @@ static int32_t adm_callback(struct apr_client_data *data, void *priv)
 				this_adm.sourceTrackingData.apr_cmd_status =
 					payload[0];
 			else if (rtac_make_adm_callback(payload,
-						data->payload_size)) {
-				pr_debug("%s: rtac cmd response\n", __func__);
-				atomic_set(&this_adm.copp.stat[port_idx][copp_idx],
-					   payload[0]);
-				wake_up(&this_adm.copp.wait[port_idx][copp_idx]);
+							data->payload_size))
 				break;
-			}
 
 			idx = ADM_GET_PARAMETER_LENGTH * copp_idx;
 			if (payload[0] == 0 && data->payload_size > 0) {
@@ -3018,6 +3152,11 @@ exit:
  *
  * Returns 0 on success or error on failure
  */
+
+#ifdef OPLUS_FEATURE_KTV
+#define AUDIO_TOPOLOGY_KTV    0x10001080
+#endif /* OPLUS_FEATURE_KTV */
+
 int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 	     int perf_mode, uint16_t bit_width, int app_type, int acdb_id,
 	     int session_type, uint32_t passthr_mode)
@@ -3109,6 +3248,15 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 		pr_debug("%s: ffecns port id =%x\n", __func__,
 				this_adm.ffecns_port_id);
 	}
+
+#ifdef OPLUS_FEATURE_KTV
+	if ((topology == AUDIO_TOPOLOGY_KTV)
+			&& (rate != ADM_CMD_COPP_OPEN_SAMPLE_RATE_48K)) {
+			pr_info("%s: Change rate %d to 48K for copp 0x%x",
+					__func__, rate, topology);
+			rate = 48000;
+	}
+#endif /* OPLUS_FEATURE_KTV */
 
 	if (topology == VPM_TX_VOICE_SMECNS_V2_COPP_TOPOLOGY ||
 	    topology == VPM_TX_VOICE_FLUENCE_SM_COPP_TOPOLOGY)
@@ -3315,9 +3463,8 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 						ep2_payload_size);
 			}
 
-			ret = adm_apr_send_pkt((uint32_t *) adm_params,
-				&this_adm.copp.wait[port_idx][copp_idx],
-				port_idx, copp_idx, open_v8.hdr.opcode);
+			ret = apr_send_pkt(this_adm.apr,
+					(uint32_t *)adm_params);
 			if (ret < 0) {
 				pr_err("%s: port_id: 0x%x for[0x%x] failed %d for open_v8\n",
 					__func__, tmp_port, port_id, ret);
@@ -3403,19 +3550,37 @@ int adm_open(int port_id, int path, int rate, int channel_mode, int topology,
 				if (ret)
 					return ret;
 
-				ret = adm_apr_send_pkt((uint32_t *) &open_v6,
-					&this_adm.copp.wait[port_idx][copp_idx],
-					port_idx, copp_idx, open_v6.hdr.opcode);
+				ret = apr_send_pkt(this_adm.apr,
+					(uint32_t *)&open_v6);
 			} else {
-				ret = adm_apr_send_pkt((uint32_t *) &open,
-					&this_adm.copp.wait[port_idx][copp_idx],
-					port_idx, copp_idx, open.hdr.opcode);
+				ret = apr_send_pkt(this_adm.apr,
+					(uint32_t *)&open);
 			}
 			if (ret < 0) {
 				pr_err("%s: port_id: 0x%x for[0x%x] failed %d\n",
 					__func__, tmp_port, port_id, ret);
 				return -EINVAL;
 			}
+		}
+
+		/* Wait for the callback with copp id */
+		ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
+			atomic_read(&this_adm.copp.stat
+			[port_idx][copp_idx]) >= 0,
+			msecs_to_jiffies(2 * TIMEOUT_MS));
+		if (!ret) {
+			pr_err("%s: ADM open timedout for port_id: 0x%x for [0x%x]\n",
+						__func__, tmp_port, port_id);
+			return -EINVAL;
+		} else if (atomic_read(&this_adm.copp.stat
+					[port_idx][copp_idx]) > 0) {
+			pr_err("%s: DSP returned error[%s]\n",
+				__func__, adsp_err_get_err_str(
+				atomic_read(&this_adm.copp.stat
+				[port_idx][copp_idx])));
+			return adsp_err_get_lnx_err_code(
+					atomic_read(&this_adm.copp.stat
+						[port_idx][copp_idx]));
 		}
 	}
 	atomic_inc(&this_adm.copp.cnt[port_idx][copp_idx]);
@@ -3921,12 +4086,30 @@ int adm_close(int port_id, int perf_mode, int copp_idx)
 
 		clear_bit(ADM_STATUS_CALIBRATION_REQUIRED,
 			(void *)&this_adm.copp.adm_status[port_idx][copp_idx]);
-		ret = adm_apr_send_pkt((uint32_t *) &close,
-			&this_adm.copp.wait[port_idx][copp_idx],
-			port_idx, copp_idx, close.opcode);
+
+		ret = apr_send_pkt(this_adm.apr, (uint32_t *)&close);
 		if (ret < 0) {
 			pr_err("%s: ADM close failed %d\n", __func__, ret);
 			return -EINVAL;
+		}
+
+		ret = wait_event_timeout(this_adm.copp.wait[port_idx][copp_idx],
+			atomic_read(&this_adm.copp.stat
+			[port_idx][copp_idx]) >= 0,
+			msecs_to_jiffies(TIMEOUT_MS));
+		if (!ret) {
+			pr_err("%s: ADM cmd Route timedout for port 0x%x\n",
+				__func__, port_id);
+			return -EINVAL;
+		} else if (atomic_read(&this_adm.copp.stat
+					[port_idx][copp_idx]) > 0) {
+			pr_err("%s: DSP returned error[%s]\n",
+				__func__, adsp_err_get_err_str(
+				atomic_read(&this_adm.copp.stat
+				[port_idx][copp_idx])));
+			return adsp_err_get_lnx_err_code(
+					atomic_read(&this_adm.copp.stat
+						[port_idx][copp_idx]));
 		}
 	}
 
@@ -4424,6 +4607,53 @@ int adm_set_volume(int port_id, int copp_idx, int volume)
 	return rc;
 }
 EXPORT_SYMBOL(adm_set_volume);
+
+#ifdef OPLUS_FEATURE_KTV
+int  adm_set_reverb_param(int port_id, int copp_idx, int32_t* params)
+{
+	struct audproc_revert_param audproc_param;
+	struct param_hdr_v3 param_hdr;
+	int rc  = 0;
+
+	pr_debug("%s, portid %d, copp idx %d\n", __func__, port_id, copp_idx);
+
+	memset(&audproc_param, 0, sizeof(audproc_param));
+	memset(&param_hdr, 0, sizeof(param_hdr));
+	param_hdr.module_id = 0x10001081;
+	param_hdr.instance_id = 0x8000;
+	param_hdr.param_id = 0x10001082;
+	param_hdr.param_size = sizeof(audproc_param);
+
+	audproc_param.mode = params[0];
+	audproc_param.volume = params[1];
+	audproc_param.peg = params[2];
+	audproc_param.pitchange = params[3];
+	audproc_param.reverbparam= params[4];
+	audproc_param.enabled= params[5];
+	audproc_param.reverved0 = params[6];
+	audproc_param.reverved1 = params[7];
+	audproc_param.reverved2 = params[8];
+	audproc_param.reverved3 = params[9];
+	audproc_param.reverved4 = params[10];
+	audproc_param.reverved5 = params[11];
+	audproc_param.reverved6 = params[12];
+	audproc_param.reverved7 = params[13];
+	audproc_param.reverved8 = params[14];
+	audproc_param.reverved9 = params[15];
+	audproc_param.reverved10 = params[16];
+	audproc_param.reverved11 = params[17];
+	audproc_param.reverved12 = params[18];
+	audproc_param.reverved13 = params[19];
+
+	rc = adm_pack_and_set_one_pp_param(port_id, copp_idx, param_hdr,
+					   (uint8_t *) &audproc_param);
+	if (rc)
+		pr_err("%s: Failed to set volume, err %d\n", __func__, rc);
+
+	return rc;
+}
+EXPORT_SYMBOL(adm_set_reverb_param);
+#endif /* OPLUS_FEATURE_KTV */
 
 /**
  * adm_set_softvolume -
@@ -5489,6 +5719,160 @@ done:
 }
 EXPORT_SYMBOL(adm_get_doa_tracking_mon);
 
+#ifdef OPLUS_FEATURE_AUDIODETECT
+static ssize_t pb_det_read(struct file *file,
+				char __user *user_buf, size_t count,
+				loff_t *ppos)
+{
+	char *str = NULL;
+	int ret = 0;
+
+	str = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!str) {
+		pr_err("Allocation failed\n");
+		return -ENOMEM;
+	}
+
+	//ret = adm_get_all_mute_pp_param();
+
+	ret = snprintf(str, PAGE_SIZE, "%d %d %d %d",
+		general_playback_muted_cnt, general_playback_zd_cnt, general_playback_pop_cnt, general_playback_clip_cnt);
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, str, ret);
+
+	general_playback_muted_cnt = 0;
+	general_playback_zd_cnt = 0;
+	general_playback_pop_cnt = 0;
+	general_playback_clip_cnt = 0;
+
+	kfree(str);
+
+	return ret;
+}
+
+static const struct file_operations pb_det_ops = {
+	.open = simple_open,
+	.read = pb_det_read,
+	.llseek = default_llseek,
+};
+
+static ssize_t rec_det_read(struct file *file,
+				char __user *user_buf, size_t count,
+				loff_t *ppos)
+{
+	char *str = NULL;
+	int ret = 0;
+
+	str = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!str) {
+		pr_err("Allocation failed\n");
+		return -ENOMEM;
+	}
+
+	//ret = adm_get_all_mute_pp_param();
+
+	ret = snprintf(str, PAGE_SIZE, "%d %d %d %d",
+		general_record_muted_cnt, general_record_zd_cnt, general_record_pop_cnt, general_record_clip_cnt);
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, str, ret);
+
+	general_record_muted_cnt = 0;
+	general_record_zd_cnt = 0;
+	general_record_pop_cnt = 0;
+	general_record_clip_cnt = 0;
+
+	kfree(str);
+
+	return ret;
+}
+
+static const struct file_operations rec_det_ops = {
+	.open = simple_open,
+	.read = rec_det_read,
+	.llseek = default_llseek,
+};
+
+static ssize_t voip_det_read(struct file *file,
+				char __user *user_buf, size_t count,
+				loff_t *ppos)
+{
+	char *str = NULL;
+	int ret = 0;
+
+	str = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!str) {
+		pr_err("Allocation failed\n");
+		return -ENOMEM;
+	}
+
+	//ret = adm_get_all_mute_pp_param();
+
+	ret = snprintf(str, PAGE_SIZE, "%d %d %d %d %d %d %d %d",
+		voip_rx_muted_cnt, voip_rx_zd_cnt, voip_rx_pop_cnt, voip_rx_clip_cnt,
+		voip_tx_muted_cnt, voip_tx_zd_cnt, voip_tx_pop_cnt, voip_tx_clip_cnt);
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, str, ret);
+
+	voip_rx_muted_cnt = 0;
+	voip_rx_zd_cnt = 0;
+	voip_rx_pop_cnt = 0;
+	voip_rx_clip_cnt = 0;
+	voip_tx_muted_cnt = 0;
+	voip_tx_zd_cnt = 0;
+	voip_tx_pop_cnt = 0;
+	voip_tx_clip_cnt = 0;
+
+	kfree(str);
+
+	return ret;
+}
+
+static const struct file_operations voip_det_ops = {
+	.open = simple_open,
+	.read = voip_det_read,
+	.llseek = default_llseek,
+};
+
+static ssize_t voice_det_read(struct file *file,
+				char __user *user_buf, size_t count,
+				loff_t *ppos)
+{
+	char *str = NULL;
+	int ret = 0;
+
+	str = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!str) {
+		pr_err("Allocation failed\n");
+		return -ENOMEM;
+	}
+
+	ret = snprintf(str, PAGE_SIZE, "%d %d %d %d %d %d %d %d",
+		voice_rx_muted_cnt, voice_rx_zd_cnt, voice_rx_pop_cnt, voice_rx_clip_cnt,
+		voice_tx_muted_cnt, voice_tx_zd_cnt, voice_tx_pop_cnt, voice_tx_clip_cnt);
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, str, ret);
+
+	voice_rx_muted_cnt = 0;
+	voice_rx_zd_cnt = 0;
+	voice_rx_pop_cnt = 0;
+	voice_rx_clip_cnt = 0;
+	voice_tx_muted_cnt = 0;
+	voice_tx_zd_cnt = 0;
+	voice_tx_pop_cnt = 0;
+	voice_tx_clip_cnt = 0;
+
+	kfree(str);
+
+	return ret;
+}
+
+static const struct file_operations voice_det_ops = {
+	.open = simple_open,
+	.read = voice_det_read,
+	.llseek = default_llseek,
+};
+#endif /* OPLUS_FEATURE_AUDIODETECT */
+
 int __init adm_init(void)
 {
 	int i = 0, j;
@@ -5497,7 +5881,6 @@ int __init adm_init(void)
 	this_adm.ffecns_port_id = -1;
 	init_waitqueue_head(&this_adm.matrix_map_wait);
 	init_waitqueue_head(&this_adm.adm_wait);
-	mutex_init(&this_adm.adm_apr_lock);
 
 	for (i = 0; i < AFE_MAX_PORTS; i++) {
 		for (j = 0; j < MAX_COPPS_PER_PORT; j++) {
@@ -5517,12 +5900,23 @@ int __init adm_init(void)
 	this_adm.sourceTrackingData.memmap.paddr = 0;
 	this_adm.sourceTrackingData.apr_cmd_status = -1;
 
+#ifdef OPLUS_FEATURE_AUDIODETECT
+	mutedet_dbg_dir = proc_mkdir("muted_det", NULL);
+	proc_create_data("pb_det", S_IRUGO|S_IWUGO, mutedet_dbg_dir,
+					&pb_det_ops, NULL);
+	proc_create_data("rec_det", S_IRUGO|S_IWUGO, mutedet_dbg_dir,
+					&rec_det_ops, NULL);
+	proc_create_data("voip_det", S_IRUGO|S_IWUGO, mutedet_dbg_dir,
+					&voip_det_ops, NULL);
+	proc_create_data("voice_det", S_IRUGO|S_IWUGO, mutedet_dbg_dir,
+					&voice_det_ops, NULL);
+#endif /* OPLUS_FEATURE_AUDIODETECT */
+
 	return 0;
 }
 
 void adm_exit(void)
 {
-	mutex_destroy(&this_adm.adm_apr_lock);
 	if (this_adm.apr)
 		adm_reset_data();
 	adm_delete_cal_data();

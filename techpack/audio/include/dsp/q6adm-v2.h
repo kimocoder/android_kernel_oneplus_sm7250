@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
 #ifndef __Q6_ADM_V2_H__
 #define __Q6_ADM_V2_H__
@@ -158,6 +158,11 @@ int adm_validate_and_get_port_index(int port_id);
 
 int adm_get_default_copp_idx(int port_id);
 
+#ifdef OPLUS_FEATURE_AUDIODETECT
+int adm_set_auddet_enable_param(int port_id, uint8_t val);
+int adm_get_all_mute_pp_param_from_port(int port_id);
+#endif /* OPLUS_FEATURE_AUDIODETECT */
+
 int adm_get_topology_for_port_from_copp_id(int port_id, int copp_id);
 
 int adm_get_topology_for_port_copp_idx(int port_id, int copp_idx);
@@ -176,6 +181,10 @@ int adm_get_pp_topo_module_list_v2(int port_id, int copp_idx,
 				   int32_t *returned_params);
 
 int adm_set_volume(int port_id, int copp_idx, int volume);
+
+#ifdef OPLUS_FEATURE_KTV
+int adm_set_reverb_param(int port_id, int copp_idx, int32_t* params);
+#endif /* OPLUS_FEATURE_KTV */
 
 int adm_set_softvolume(int port_id, int copp_idx,
 		       struct audproc_softvolume_params *softvol_param);
@@ -229,6 +238,4 @@ void msm_dts_srs_acquire_lock(void);
 void msm_dts_srs_release_lock(void);
 void adm_set_native_mode(int mode);
 int adm_set_ffecns_freeze_event(bool ffecns_freeze_event);
-int adm_apr_send_pkt(void *data, wait_queue_head_t *wait,
-			int port_idx, int copp_idx, int opcode);
 #endif /* __Q6_ADM_V2_H__ */
