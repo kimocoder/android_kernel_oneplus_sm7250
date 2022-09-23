@@ -50,6 +50,7 @@ endif
 redirect_openssl	= 2>&1
 quiet_redirect_openssl	= 2>&1
 silent_redirect_openssl = 2>/dev/null
+HOSTCFLAGS_extract-cert.o += -DOPENSSL_API_COMPAT=0x10100000L
 
 # We do it this way rather than having a boolean option for enabling an
 # external private key, because 'make randconfig' might enable such a
