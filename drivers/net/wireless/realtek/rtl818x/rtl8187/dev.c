@@ -252,7 +252,11 @@ static void rtl8187_tx(struct ieee80211_hw *dev,
 
 	flags |= ieee80211_get_tx_rate(dev, info)->hw_value << 24;
 	if (ieee80211_has_morefrags(tx_hdr->frame_control))
-		flags |= RTL818X_TX_DESC_FLAG_MOREFRAG;
+	{
+		if (likely(info->control.vif != NULL && info->control.vif->type != NL80211_IFTYPE_MONITOR)) {
+			flags |= RTL818X_TX_DESC_FLAG_MOREFRAG;
+		}
+	}
 
 	/* HW will perform RTS-CTS when only RTS flags is set.
 	 * HW will perform CTS-to-self when both RTS and CTS flags are set.
