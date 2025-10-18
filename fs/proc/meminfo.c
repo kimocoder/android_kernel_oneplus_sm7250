@@ -18,7 +18,7 @@
 #include <linux/cma.h>
 #endif
 #include <asm/page.h>
-#include <asm/pgtable.h>
+#include <linux/pgtable.h>
 #include "internal.h"
 
 //#ifdef OPLUS_FEATURE_HEALTHINFO
