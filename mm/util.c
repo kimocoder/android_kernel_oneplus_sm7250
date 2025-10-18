@@ -470,7 +470,7 @@ void *kvmalloc_node(size_t size, gfp_t flags, int node)
 	 */
 	if (ret || size <= PAGE_SIZE)
 		return ret;
-
+use_vmalloc:
 	return __vmalloc_node(size, 1, flags, node,
 			__builtin_return_address(0));
 }
